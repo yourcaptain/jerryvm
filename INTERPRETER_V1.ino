@@ -3,10 +3,11 @@
 const bool __ENABLE_DEBUG__ = true;
 
 // CONST
-const int MAX_INSTRUCTIONS = 5;// at most 100 instructions
-const int MAX_PC = 10;
+const int MAX_INSTRUCTIONS = 5;// 最多5种指令类型
+const int MAX_PC = 20; //最多20条指令
 const int MAX_OPERA_STACK = 3;
 
+const int USER_CODE_START_POS_IN_ROM = 1;
 const short PIN_STATE = 13;
 const int SERIAL_BOND = 9600;
 const byte CONTROL_START = 0xEF;
@@ -20,7 +21,7 @@ bool downloadingUserCode = false;
 byte userCodeDownloadBuffer[USER_CODE_BUFFER_LEN];
 
 // variables for writing to EEPROM
-int eeAddress = 0;
+int eeAddress = USER_CODE_START_POS_IN_ROM; // address 0 is reserved for saving length
 
 // program count
 short pc = 0;
@@ -28,7 +29,7 @@ short totalPc=0;
 
 // interpret and executing
 byte *userCodeBuffer = NULL;
-bool firstExecuting = false; // set true when read from serial finished or read from ROM, set false when read from ROM
+bool firstExecuting = false; // set true when read from serial finished, set false when read from ROM
 
 // opera stack
 byte OPERA_STACK[MAX_OPERA_STACK];
@@ -54,22 +55,31 @@ void setup() {
 
   memclear(OPERA_STACK, MAX_OPERA_STACK);
 
-  clearEEPROM();
+//  clearEEPROM();
 
   Serial.begin(SERIAL_BOND);
-  // do not need to wait for serial port as serial may connect at any time
-//    while (!Serial) {
-//      ; // wait for serial port to connect. Needed for native USB port only
-//    }
+  // wait 2.5s for serial connected
+  for (int i=0; i<10; i++) {
+    if (Serial) break; // wait for serial port to connect. Needed for native USB port only
+    if (!Serial) delay(500);
+  }
 
   prepareInstructionStack();
+
+  // 
+  if (checkIfUserCodeInEEPROM()) {
+    int userCodeBufferLen = readUserCodeFromROM();
+    preparePcStack(userCodeBufferLen);
+  }
   
   digitalWrite(PIN_STATE, LOW);
 }
 
 void loop() {
   checkAndReadUserCodeFromSerial();
+
   if (downloadingUserCode) {
+    debug("downloading user code ...");
     resetPC();
     return;
   }
@@ -80,8 +90,10 @@ void loop() {
 
   debug("firstExecuting = " + String(firstExecuting));
   if (firstExecuting) {
-    readUserCodeFromROM();  
-    preparePcStack();
+    int userCodeBufferLen = readUserCodeFromROM();  
+    preparePcStack(userCodeBufferLen);
+
+    firstExecuting = false;
   }
 
   executeUserCode();
@@ -90,6 +102,7 @@ void loop() {
 
 void executeUserCode() {
   if (!userCodeBuffer){// no user code to execute
+    debug("user code buffer is NULL");
     return;  
   }
 
@@ -117,35 +130,38 @@ void executeUserCode() {
   debug("executing code: ", "OVER", userCodeBuffer, eeAddress);
 }
 
-void readUserCodeFromROM() {
+// 返回获取的代码userCodeBuffer长度
+int readUserCodeFromROM() {
+  int len = EEPROM.read(0);
+  if (!len){
+    debug("read length from ROM is 0");
+    return;
+  }
+  debug("read length from ROM is " + String(len));
+  
   // release memory which is used by previous user codes
   if (!userCodeBuffer){
     delete userCodeBuffer;  
   }
 
-  // no user code to be read
-  if (eeAddress <= 0) {
-    userCodeBuffer = 0;
-    return;
-  }
-
   // read from ROM
-  userCodeBuffer = new byte[eeAddress];
-  for (int index = 0 ; index < eeAddress ; index++) {
+  userCodeBuffer = new byte[len];
+  for (int index = USER_CODE_START_POS_IN_ROM ; index < len ; index++) {
     //Add one to each cell in the EEPROM
-    userCodeBuffer[index] = EEPROM.read(index);
+    userCodeBuffer[index-1] = EEPROM.read(index);
   }  
-  debug("Read from ROM: ", "OVER", userCodeBuffer, eeAddress);
-  firstExecuting = false;
+  debug("Read from ROM: ", "OVER", userCodeBuffer, len);
+
+  return len;
 }
 
 // 
-void preparePcStack() {
-  debug("preparePcStack start, eeAddress=" + String(eeAddress));
+void preparePcStack(int userCodeBufferLen) {
+  debug("preparePcStack start, userCodeBufferLen=" + String(userCodeBufferLen));
   int pcCount=0;
   int index=0;
   byte code = getNextCode(index);
-  while(code && index<eeAddress-1 ){
+  while(code && index<userCodeBufferLen-1 ){
     debug("prepare code:" + String(code, HEX) + " index: "+String(index));
     struct _PC pc;
     switch(code) {
@@ -221,21 +237,29 @@ byte getNextCode(int index){
 }
 
 bool checkIfUserCodeInEEPROM() {
-  byte code = EEPROM.read(0);
-  if (code) {
+  byte len = EEPROM.read(0);
+  if (len) {
+    debug("user codes length that saved in ROM is: 0x" + String(len, HEX));
     return true;
   }
 
+  debug("user codes length that saved in ROM is: 0x" + String(len, HEX));
   return false;
 }
 
 void checkAndReadUserCodeFromSerial() {
   size_t userCodeDownloadBufferLen=0;
   memclear(userCodeDownloadBuffer, USER_CODE_BUFFER_LEN);
+  
+  if (!Serial){
+    debug("!! Serial is false !!");
+    return;
+  }
+  
   // reply only when you receive data:
   if (Serial.available() > 0) {
     userCodeDownloadBufferLen = Serial.readBytes(userCodeDownloadBuffer, BYTES_TO_READ);
-    debug("Read user code's size:" + String(userCodeDownloadBufferLen) + ", Read user codes: ", "OVER", userCodeDownloadBuffer, userCodeDownloadBufferLen);
+    debug("Downloading user code's size:" + String(userCodeDownloadBufferLen) + ", Downloading user codes: ", "OVER", userCodeDownloadBuffer, userCodeDownloadBufferLen);
 
     if (!downloadingUserCode) { // waiting for CONTROL_START single
       if (userCodeDownloadBufferLen >= 1) {
@@ -297,7 +321,7 @@ void memclear(byte mem[], const int len) {
 void doSomethingWhenStartReadingUserCode() {
   debug("doSomethingWhenStartReadingUserCode");
 
-  eeAddress = 0;
+  eeAddress = USER_CODE_START_POS_IN_ROM;
   downloadingUserCode = true; // yes, set start reading user code flag
   clearEEPROM();
 }
@@ -307,6 +331,8 @@ void doSomethingWhenFinishReadingUserCode() {
 
   resetPC();
   downloadingUserCode = false;
+
+  EEPROM.write(0, eeAddress);// save last eeAddress to pos 0
 
   firstExecuting = true;
 }
