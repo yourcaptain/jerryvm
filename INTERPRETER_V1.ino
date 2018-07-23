@@ -198,6 +198,23 @@ void preparePcStack(int userCodeBufferLen) {
         pcCount++;
         totalPc++;
         break;
+      case 0x11:
+        debug("switch to 0x11");
+        pc.pcCount=pcCount;
+        pc.instruction=code;
+        index++;
+        pc.vals[0]=(int)getNextCode(index);
+        index++;
+        pc.vals[1]=(int)getNextCode(index);
+        index++;
+        pc.valLen=2;
+        PC_STACK[pcCount]=pc;
+
+        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
+
+        pcCount++;
+        totalPc++;
+        break;
       default:
         error("instruction is undefined. 0x" + String(code, HEX));
         return;
@@ -210,24 +227,26 @@ void preparePcStack(int userCodeBufferLen) {
 void prepareInstructionStack() {
   constructInstruction(0x01);
   constructInstruction(0x10);
+  constructInstruction(0x11);
 }
 
 void constructInstruction(byte ins){
   struct _INSTRUCTION instruction;
+  instruction.ins=ins;
   switch(ins) {
       case 0x01:
-        instruction.ins=ins;
         instruction.func = __delay;
-        INSTRUCTIONS[ins]=instruction;
         break;
       case 0x10:
-        instruction.ins=ins;
         instruction.func = __digital_write;
-        INSTRUCTIONS[ins]=instruction;
+        break;
+      case 0x11:
+        instruction.func = __pin_mode;
         break;
       default:
         return;
     }
+    INSTRUCTIONS[ins]=instruction;
 }
 
 byte getNextCode(int index){
@@ -283,7 +302,10 @@ void checkAndReadUserCodeFromSerial() {
         // check if CONTROL_END single contained
         // if contained, do not save it to EEPROM
         byte lastByte = userCodeDownloadBuffer[userCodeDownloadBufferLen - 1];
-        
+
+        //todo 结尾控制符号可能含在读取的内容中间而非恰好是在末尾，是否需要处理？
+        //     一般正规jerry编译器可以确保结尾控制符处于末尾
+        //todo 结尾控制符选择EF并非最好，需要另外选择其它符号
         if (userCodeDownloadBuffer[userCodeDownloadBufferLen - 1] == CONTROL_END) {
           for (int j=0; j<userCodeDownloadBufferLen - 1; j++) {
             EEPROM.write(eeAddress, userCodeDownloadBuffer[j]);
@@ -421,6 +443,20 @@ void __digital_write(){
   }
 
   debug("__digital_write() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+}
+
+void __pin_mode(){
+  byte pin = __pop();
+  byte val = __pop();
+  
+  if (val==0) {
+    pinMode((int)pin, LOW);
+  }
+  else {
+    pinMode((int)pin, HIGH);
+  }
+
+  debug("pinMode() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
 }
 
 void __push(byte val){
