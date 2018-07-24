@@ -3,8 +3,8 @@
 const bool __ENABLE_DEBUG__ = true;
 
 // CONST
-const int MAX_INSTRUCTIONS = 5;// 最多5种指令类型
-const int MAX_PC = 20; //最多20条指令
+const int MAX_INSTRUCTIONS = 6;// 最多5种指令类型
+const int MAX_PC = 20; //最多20条指令 todo 如何动态增加PC？
 const int MAX_OPERA_STACK = 3;
 
 const int USER_CODE_START_POS_IN_ROM = 1;
@@ -44,9 +44,11 @@ struct _PC{
 
 // instructions
 typedef void (*__instruction_ptr)();
+typedef int (*__getcode_ptr)(const int index, struct _PC *const pc);
 struct _INSTRUCTION{
   byte ins;
   __instruction_ptr func;
+  __getcode_ptr getcode_fun;
 } INSTRUCTIONS[MAX_INSTRUCTIONS];
 
 void setup() {
@@ -55,6 +57,7 @@ void setup() {
 
   memclear(OPERA_STACK, MAX_OPERA_STACK);
 
+// DO NOT CLEAR ROM because user code that stored in ROM will be executed after reboot
 //  clearEEPROM();
 
   Serial.begin(SERIAL_BOND);
@@ -66,6 +69,7 @@ void setup() {
 
   prepareInstructionStack();
 
+//  checkAndReadUserCodeFromSerial();
   // 
   if (checkIfUserCodeInEEPROM()) {
     int userCodeBufferLen = readUserCodeFromROM();
@@ -76,6 +80,7 @@ void setup() {
 }
 
 void loop() {
+  // 检查是否在下载代码
   checkAndReadUserCodeFromSerial();
 
   if (downloadingUserCode) {
@@ -83,10 +88,21 @@ void loop() {
     resetPC();
     return;
   }
+  // 检查结束
 
   if (!checkIfUserCodeInEEPROM()) {
     return;
   }
+
+  // 检查是否在下载代码
+  checkAndReadUserCodeFromSerial();
+
+  if (downloadingUserCode) {
+    debug("downloading user code ...");
+    resetPC();
+    return;
+  }
+  // 检查结束
 
   debug("firstExecuting = " + String(firstExecuting));
   if (firstExecuting) {
@@ -95,6 +111,16 @@ void loop() {
 
     firstExecuting = false;
   }
+
+  // 检查是否在下载代码
+  checkAndReadUserCodeFromSerial();
+
+  if (downloadingUserCode) {
+    debug("downloading user code ...");
+    resetPC();
+    return;
+  }
+  // 检查结束
 
   executeUserCode();
   
@@ -106,7 +132,7 @@ void executeUserCode() {
     return;  
   }
 
-  debug("executing code: ", "START", userCodeBuffer, eeAddress);
+  debug("executing code: ", " pc: "+ String(pc)+" START", userCodeBuffer, eeAddress);
   struct _PC _pc = PC_STACK[pc];
   struct _INSTRUCTION instruction = INSTRUCTIONS[_pc.instruction];
 
@@ -146,7 +172,7 @@ int readUserCodeFromROM() {
 
   // read from ROM
   userCodeBuffer = new byte[len];
-  for (int index = USER_CODE_START_POS_IN_ROM ; index < len ; index++) {
+  for (int index = USER_CODE_START_POS_IN_ROM ; index < len+USER_CODE_START_POS_IN_ROM ; index++) {
     //Add one to each cell in the EEPROM
     userCodeBuffer[index-1] = EEPROM.read(index);
   }  
@@ -163,55 +189,23 @@ void preparePcStack(int userCodeBufferLen) {
   byte code = getNextCode(index);
   while(code && index<userCodeBufferLen-1 ){
     debug("prepare code:" + String(code, HEX) + " index: "+String(index));
+    
     struct _PC pc;
+    int indexStepForward;
+    pc.pcCount=pcCount;
+    pc.instruction=code;
     switch(code) {
-      case 0x01:  
-        pc.pcCount=pcCount;
-        pc.instruction=code;
-        index++;
-        pc.vals[0]=(int)getNextCode(index);
-        index++;
-        pc.vals[1]=(int)getNextCode(index);
-        index++;
-        pc.valLen=2;
+      case 0x01:
+      case 0x02:
+      case 0x03:
+      case 0x04:
+      case 0x05:
+        debug("getcode_fun(" + String(index) + "0");
+        indexStepForward = INSTRUCTIONS[code].getcode_fun(index, &pc);
+        debug("indexStepForward=" + String(indexStepForward));
+        index += indexStepForward;
         PC_STACK[pcCount]=pc;
-
         debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
-
-        pcCount++;
-        totalPc++;
-        break;
-      case 0x10:
-        debug("switch to 0x10");
-        pc.pcCount=pcCount;
-        pc.instruction=code;
-        index++;
-        pc.vals[0]=(int)getNextCode(index);
-        index++;
-        pc.vals[1]=(int)getNextCode(index);
-        index++;
-        pc.valLen=2;
-        PC_STACK[pcCount]=pc;
-
-        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
-
-        pcCount++;
-        totalPc++;
-        break;
-      case 0x11:
-        debug("switch to 0x11");
-        pc.pcCount=pcCount;
-        pc.instruction=code;
-        index++;
-        pc.vals[0]=(int)getNextCode(index);
-        index++;
-        pc.vals[1]=(int)getNextCode(index);
-        index++;
-        pc.valLen=2;
-        PC_STACK[pcCount]=pc;
-
-        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
-
         pcCount++;
         totalPc++;
         break;
@@ -220,28 +214,68 @@ void preparePcStack(int userCodeBufferLen) {
         return;
     }
 
+    index++;
     code = getNextCode(index);
   }
 }
 
+int getUnitaryCode(const int index, struct _PC *const pc){
+  int i = index;
+  i++;
+  pc->vals[0]=(int)getNextCode(i);
+  pc->valLen=1; 
+
+  return 1;
+}
+
+int getBinaryCode(const int index, struct _PC *const pc){
+  int i = index;
+  i++;
+  pc->vals[0]=(int)getNextCode(i);
+  i++;
+  pc->vals[1]=(int)getNextCode(i);
+  pc->valLen=2;   
+
+  return 2;
+}
+
 void prepareInstructionStack() {
   constructInstruction(0x01);
-  constructInstruction(0x10);
-  constructInstruction(0x11);
+  constructInstruction(0x02);
+  constructInstruction(0x03);
+  constructInstruction(0x04);
+  constructInstruction(0x05);
 }
 
 void constructInstruction(byte ins){
   struct _INSTRUCTION instruction;
+
+  if (ins >= MAX_INSTRUCTIONS) {
+    debug("instruction CODE should not be great than MAX_INSTRUCTIONS(" + String(MAX_INSTRUCTIONS) + ")");
+    return;  
+  }
+  
   instruction.ins=ins;
   switch(ins) {
       case 0x01:
         instruction.func = __delay;
+        instruction.getcode_fun = getBinaryCode;
         break;
-      case 0x10:
+      case 0x02:
         instruction.func = __digital_write;
+        instruction.getcode_fun = getBinaryCode;
         break;
-      case 0x11:
+      case 0x03:
         instruction.func = __pin_mode;
+        instruction.getcode_fun = getBinaryCode;
+        break;
+      case 0x04:
+        instruction.func = __goto;
+        instruction.getcode_fun = getUnitaryCode;
+        break;
+      case 0x05:
+        instruction.func = __compare;
+        instruction.getcode_fun = getBinaryCode;
         break;
       default:
         return;
@@ -251,22 +285,23 @@ void constructInstruction(byte ins){
 
 byte getNextCode(int index){
   byte val = userCodeBuffer[index];
-  debug("getNextCode(" + String(index) + ") is 0x" + String(val, HEX));
+  debug("end getNextCode(" + String(index) + ") is 0x" + String(val, HEX));
   return val;
 }
 
 bool checkIfUserCodeInEEPROM() {
-  byte len = EEPROM.read(0);
-  if (len) {
-    debug("user codes length that saved in ROM is: 0x" + String(len, HEX));
+  int len = EEPROM.read(0);
+  if (len > 0) {
+    debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: " + String(len));
     return true;
   }
 
-  debug("user codes length that saved in ROM is: 0x" + String(len, HEX));
+  debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: 0");
   return false;
 }
 
 void checkAndReadUserCodeFromSerial() {
+  debug("checkAndReadUserCodeFromSerial");
   size_t userCodeDownloadBufferLen=0;
   memclear(userCodeDownloadBuffer, USER_CODE_BUFFER_LEN);
   
@@ -333,6 +368,9 @@ void checkAndReadUserCodeFromSerial() {
       }
     }
   }
+  else {
+    debug("!! Serial is not avalable yet!!");  
+  }
 }
 
 void memclear(byte mem[], const int len) {
@@ -344,6 +382,7 @@ void doSomethingWhenStartReadingUserCode() {
   debug("doSomethingWhenStartReadingUserCode");
 
   eeAddress = USER_CODE_START_POS_IN_ROM;
+  debug("reset eeAddress=" + String(USER_CODE_START_POS_IN_ROM));
   downloadingUserCode = true; // yes, set start reading user code flag
   clearEEPROM();
 }
@@ -354,7 +393,8 @@ void doSomethingWhenFinishReadingUserCode() {
   resetPC();
   downloadingUserCode = false;
 
-  EEPROM.write(0, eeAddress);// save last eeAddress to pos 0
+  EEPROM.write(0, eeAddress-1);// save last eeAddress to pos 0
+  debug("write user code length " + String(eeAddress-1, HEX) + " to ROM at pos 0");
 
   firstExecuting = true;
 }
@@ -457,6 +497,23 @@ void __pin_mode(){
   }
 
   debug("pinMode() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+}
+
+void __goto(){
+  byte _pc = __pop();
+  pc = _pc;
+
+  debug("__goto() pc: 0x" + String(_pc, HEX));
+}
+
+void __compare(){
+  byte val2 = __pop();
+  byte val1 = __pop();
+  
+  int c = val1 - val2;
+  __push((byte)c);
+
+  debug("__compare() val1: 0x" + String(val1, HEX) + " val2: 0x" + String(val2, HEX));
 }
 
 void __push(byte val){
