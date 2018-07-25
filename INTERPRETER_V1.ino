@@ -3,9 +3,11 @@
 const bool __ENABLE_DEBUG__ = true;
 
 // CONST
-const int MAX_INSTRUCTIONS = 6;// 最多5种指令类型
+const int MAX_INSTRUCTIONS = 10;// 最多10种指令类型
 const int MAX_PC = 20; //最多20条指令 todo 如何动态增加PC？
 const int MAX_OPERA_STACK = 3;
+
+const byte NOP_CODE = 0x06;
 
 const int USER_CODE_START_POS_IN_ROM = 1;
 const short PIN_STATE = 13;
@@ -15,6 +17,9 @@ const byte CONTROL_END = 0xFE;
 const short BYTES_TO_READ = 10;
 const short USER_CODE_BUFFER_LEN = 10;
 const int EEPROM_SIZE = 512;// bytes
+
+//const pool
+byte CONST_POOL[25][2] = {{0x0001}, {0x0002}, {0x0003}, {0x0004}, {0x0005}, {0x0006}, {0x0007}, {0x0008}, {0x0009}, {0x000A}, {0x000B}, {0x000C}, {0x000D}, {0x000E}, {0x000F}, {0x0010}, {0x0011}, {0x0012}, {0x0013}, {0x0014}, {0x0015}};
 
 // variables for reading from Serial
 bool downloadingUserCode = false;
@@ -132,7 +137,8 @@ void executeUserCode() {
     return;  
   }
 
-  debug("executing code: ", " pc: "+ String(pc)+" START", userCodeBuffer, eeAddress);
+//  debug("executing code: ", " pc: "+ String(pc)+" START", userCodeBuffer, eeAddress);
+  debug(CONST_POOL[0], pc);
   struct _PC _pc = PC_STACK[pc];
   struct _INSTRUCTION instruction = INSTRUCTIONS[_pc.instruction];
 
@@ -140,20 +146,18 @@ void executeUserCode() {
     __push(_pc.vals[i]);  
   }
 
-  if (_pc.valLen == 1)
-    debug("operastack: " + String(OPERA_STACK[0], HEX));
-  if (_pc.valLen == 2)
-    debug("operastack: " + String(OPERA_STACK[0], HEX) + " "+ String(OPERA_STACK[1], HEX) );
   instruction.func();
 
-  debug("pc=" + String(pc) + " is executed.");
+//  debug("pc=" + String(pc) + " is executed.");
+  
 
   pc++;
   if (pc > totalPc-1) {
     pc = 0;
   }
 
-  debug("executing code: ", "OVER", userCodeBuffer, eeAddress);
+//  debug("executing code: ", "OVER", userCodeBuffer, eeAddress);
+  debug(CONST_POOL[1], pc);
 }
 
 // 返回获取的代码userCodeBuffer长度
@@ -163,7 +167,8 @@ int readUserCodeFromROM() {
     debug("read length from ROM is 0");
     return;
   }
-  debug("read length from ROM is " + String(len));
+//  debug("read length from ROM is " + String(len));
+  debug(CONST_POOL[2], len);
   
   // release memory which is used by previous user codes
   if (!userCodeBuffer){
@@ -176,7 +181,7 @@ int readUserCodeFromROM() {
     //Add one to each cell in the EEPROM
     userCodeBuffer[index-1] = EEPROM.read(index);
   }  
-  debug("Read from ROM: ", "OVER", userCodeBuffer, len);
+//  debug("Read from ROM: ", "OVER", userCodeBuffer, len);
 
   return len;
 }
@@ -195,28 +200,35 @@ void preparePcStack(int userCodeBufferLen) {
     pc.pcCount=pcCount;
     pc.instruction=code;
     switch(code) {
+      case NOP_CODE:
       case 0x01:
       case 0x02:
       case 0x03:
       case 0x04:
       case 0x05:
-        debug("getcode_fun(" + String(index) + "0");
+        debug("getcode_fun(" + String(index) + ")");
         indexStepForward = INSTRUCTIONS[code].getcode_fun(index, &pc);
         debug("indexStepForward=" + String(indexStepForward));
         index += indexStepForward;
         PC_STACK[pcCount]=pc;
-        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
+//        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
         pcCount++;
         totalPc++;
         break;
       default:
-        error("instruction is undefined. 0x" + String(code, HEX));
+//        error("instruction is undefined. 0x" + String(code, HEX));
+          debug(CONST_POOL[3], code);
         return;
     }
 
     index++;
     code = getNextCode(index);
   }
+}
+
+int getNopCode(const int index, struct _PC *const pc){
+  debug("getNopCode");
+  return 0;
 }
 
 int getUnitaryCode(const int index, struct _PC *const pc){
@@ -240,6 +252,7 @@ int getBinaryCode(const int index, struct _PC *const pc){
 }
 
 void prepareInstructionStack() {
+  constructInstruction(NOP_CODE);
   constructInstruction(0x01);
   constructInstruction(0x02);
   constructInstruction(0x03);
@@ -251,12 +264,17 @@ void constructInstruction(byte ins){
   struct _INSTRUCTION instruction;
 
   if (ins >= MAX_INSTRUCTIONS) {
-    debug("instruction CODE should not be great than MAX_INSTRUCTIONS(" + String(MAX_INSTRUCTIONS) + ")");
+//    debug("instruction CODE should not be great than MAX_INSTRUCTIONS(" + String(MAX_INSTRUCTIONS) + ")");
+    debug(CONST_POOL[4], MAX_INSTRUCTIONS);
     return;  
   }
   
   instruction.ins=ins;
   switch(ins) {
+      case NOP_CODE:
+        instruction.func = __nop;
+        instruction.getcode_fun = getNopCode;
+        break;
       case 0x01:
         instruction.func = __delay;
         instruction.getcode_fun = getBinaryCode;
@@ -285,35 +303,38 @@ void constructInstruction(byte ins){
 
 byte getNextCode(int index){
   byte val = userCodeBuffer[index];
-  debug("end getNextCode(" + String(index) + ") is 0x" + String(val, HEX));
+//  debug("end getNextCode(" + String(index) + ") is 0x" + String(val, HEX));
   return val;
 }
 
 bool checkIfUserCodeInEEPROM() {
   int len = EEPROM.read(0);
   if (len > 0) {
-    debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: " + String(len));
+//  debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: " + String(len));
+    debug(CONST_POOL[5], len);
     return true;
   }
 
-  debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: 0");
+//  debug("checkIfUserCodeInEEPROM: user codes length that saved in ROM is: 0");
+  debug(CONST_POOL[5], 0);
   return false;
 }
 
 void checkAndReadUserCodeFromSerial() {
-  debug("checkAndReadUserCodeFromSerial");
   size_t userCodeDownloadBufferLen=0;
   memclear(userCodeDownloadBuffer, USER_CODE_BUFFER_LEN);
   
   if (!Serial){
-    debug("!! Serial is false !!");
+//    debug("!! Serial is false !!");
+    debug(CONST_POOL[6]);
     return;
   }
   
   // reply only when you receive data:
   if (Serial.available() > 0) {
     userCodeDownloadBufferLen = Serial.readBytes(userCodeDownloadBuffer, BYTES_TO_READ);
-    debug("Downloading user code's size:" + String(userCodeDownloadBufferLen) + ", Downloading user codes: ", "OVER", userCodeDownloadBuffer, userCodeDownloadBufferLen);
+//    debug("Downloading user code's size:" + String(userCodeDownloadBufferLen) + ", Downloading user codes: ", "OVER", userCodeDownloadBuffer, userCodeDownloadBufferLen);
+    debug(CONST_POOL[7], userCodeDownloadBufferLen);
 
     if (!downloadingUserCode) { // waiting for CONTROL_START single
       if (userCodeDownloadBufferLen >= 1) {
@@ -348,7 +369,7 @@ void checkAndReadUserCodeFromSerial() {
           }
           
           doSomethingWhenFinishReadingUserCode();// reset pc, reset readingUserCode flag
-          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen - 1);
+//          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen - 1);
         }
         else {
           for (int j=0; j<userCodeDownloadBufferLen; j++) {
@@ -356,7 +377,7 @@ void checkAndReadUserCodeFromSerial() {
             eeAddress++;
           }
 
-          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen);
+//          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen);
           if (eeAddress >= EEPROM_SIZE -1) {
             doSomethingWhenFinishReadingUserCode();
             clearEEPROM();
@@ -364,12 +385,14 @@ void checkAndReadUserCodeFromSerial() {
         }
       }
       else {
-        debug("readingUserCode, but no code read");
+//        debug("readingUserCode, but no code read");
+        debug(CONST_POOL[8]);
       }
     }
   }
   else {
-    debug("!! Serial is not avalable yet!!");  
+//    debug("!! Serial is not avalable yet!!");  
+    debug(CONST_POOL[9]);
   }
 }
 
@@ -379,7 +402,8 @@ void memclear(byte mem[], const int len) {
 }
 
 void doSomethingWhenStartReadingUserCode() {
-  debug("doSomethingWhenStartReadingUserCode");
+//  debug("doSomethingWhenStartReadingUserCode");
+  debug(CONST_POOL[10]);
 
   eeAddress = USER_CODE_START_POS_IN_ROM;
   debug("reset eeAddress=" + String(USER_CODE_START_POS_IN_ROM));
@@ -388,13 +412,14 @@ void doSomethingWhenStartReadingUserCode() {
 }
 
 void doSomethingWhenFinishReadingUserCode() {
-  debug("doSomethingWhenFinishReadingUserCode");
+//  debug("doSomethingWhenFinishReadingUserCode");
+  debug(CONST_POOL[11]);
 
   resetPC();
   downloadingUserCode = false;
 
   EEPROM.write(0, eeAddress-1);// save last eeAddress to pos 0
-  debug("write user code length " + String(eeAddress-1, HEX) + " to ROM at pos 0");
+//  debug("write user code length " + String(eeAddress-1, HEX) + " to ROM at pos 0");
 
   firstExecuting = true;
 }
@@ -412,6 +437,33 @@ void clearEEPROM() {
 void error(String content) {
   Serial.println(content); 
   Serial.flush();
+}
+
+/**
+ * arduino传参可能是小端先序传参
+ * 所以传入0x0001，函数收到后就变成了 0x0100
+ * 为了正常显示需要先print code[1]  再 code[2]
+ */
+void debug(byte code[2]) {
+  if (__ENABLE_DEBUG__) {
+    Serial.println("#" + String(code[1]) + String(code[0])); 
+    Serial.flush();
+  }
+}
+
+
+void debug(byte code[2], byte val1) {
+  if (__ENABLE_DEBUG__) {
+    Serial.println("#" + String(code[1]) + String(code[0]) + " " + String(val1)); 
+    Serial.flush();
+  }
+}
+
+void debug(byte code[2], byte val1, byte val2) {
+  if (__ENABLE_DEBUG__) {
+    Serial.println("#" + String(code[1]) + String(code[0]) + " " + String(val1) + " " + String(val2)); 
+    Serial.flush();
+  }
 }
 
 void debug(String content) {
@@ -456,6 +508,10 @@ void debug(String prefix, String suffix, byte b) {
  * call back
  * 
  ****************************************************/
+void __nop(){
+  debug("__nop");
+  return;
+}
 
 void __delay(){
   byte msLOW = __pop();//先pop出整数的低四位
@@ -467,7 +523,9 @@ void __delay(){
 
   ms = ms | msLOW;
   ms = ms | msHIGHlong;
-  debug("__delay(" + String(ms) + ")");
+//  debug("__delay(" + String(ms) + ")");
+  debug(CONST_POOL[12]);
+  
   delay(ms);
 }
 
@@ -482,7 +540,8 @@ void __digital_write(){
     digitalWrite((int)pin, HIGH);
   }
 
-  debug("__digital_write() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+//  debug("__digital_write() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+  debug(CONST_POOL[13]);
 }
 
 void __pin_mode(){
@@ -496,14 +555,16 @@ void __pin_mode(){
     pinMode((int)pin, HIGH);
   }
 
-  debug("pinMode() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+//  debug("pinMode() pin: 0x" + String(pin, HEX) + " val: 0x" + String(val, HEX));
+  debug(CONST_POOL[14]);
 }
 
 void __goto(){
   byte _pc = __pop();
   pc = _pc;
 
-  debug("__goto() pc: 0x" + String(_pc, HEX));
+//  debug("__goto() pc: 0x" + String(_pc, HEX));
+  debug(CONST_POOL[15]);
 }
 
 void __compare(){
@@ -513,7 +574,8 @@ void __compare(){
   int c = val1 - val2;
   __push((byte)c);
 
-  debug("__compare() val1: 0x" + String(val1, HEX) + " val2: 0x" + String(val2, HEX));
+//  debug("__compare() val1: 0x" + String(val1, HEX) + " val2: 0x" + String(val2, HEX));
+  debug(CONST_POOL[16]);
 }
 
 void __push(byte val){
