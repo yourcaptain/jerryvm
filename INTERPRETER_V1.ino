@@ -4,12 +4,13 @@ const bool __ENABLE_DEBUG__ = true;
 
 // CONST
 const int MAX_INSTRUCTIONS = 10;// 最多10种指令类型
-const int MAX_PC = 20; //最多20条指令 todo 如何动态增加PC？
+const int INIT_PC_STACK_CAPACITY = 30; //初始INIT_PC_STACK_CAPACITY条指令，可动态增加
+const float PC_INCREMENTAL_RATIO = 0.8;//PC STACK使用量达到0.8时，容量增加2倍
 const int MAX_OPERA_STACK = 3;
 
 const byte NOP_CODE = 0x06;
 
-const int USER_CODE_START_POS_IN_ROM = 1;
+const int USER_CODE_START_POS_IN_ROM = 1;//CONTROL_START
 const short PIN_STATE = 13;
 const int SERIAL_BOND = 9600;
 const byte CONTROL_START = 0xEF;
@@ -19,7 +20,8 @@ const short USER_CODE_BUFFER_LEN = 10;
 const int EEPROM_SIZE = 512;// bytes
 
 //const pool
-byte CONST_POOL[25][2] = {{0x0001}, {0x0002}, {0x0003}, {0x0004}, {0x0005}, {0x0006}, {0x0007}, {0x0008}, {0x0009}, {0x000A}, {0x000B}, {0x000C}, {0x000D}, {0x000E}, {0x000F}, {0x0010}, {0x0011}, {0x0012}, {0x0013}, {0x0014}, {0x0015}};
+byte CONST_POOL[25][2] = {{0x0001}, {0x0002}, {0x0003}, {0x0004}, {0x0005}, {0x0006}, {0x0007}, {0x0008}, {0x0009}, {0x000A}, {0x000B}
+, {0x000C}, {0x000D}, {0x000E}, {0x000F}, {0x0010}, {0x0011}, {0x0012}, {0x0013}, {0x0014}, {0x0015}};
 
 // variables for reading from Serial
 bool downloadingUserCode = false;
@@ -31,6 +33,7 @@ int eeAddress = USER_CODE_START_POS_IN_ROM; // address 0 is reserved for saving 
 // program count
 short pc = 0;
 short totalPc=0;
+int pcStackCapacity = INIT_PC_STACK_CAPACITY;
 
 // interpret and executing
 byte *userCodeBuffer = NULL;
@@ -45,7 +48,7 @@ struct _PC{
   byte instruction;
   short valLen;
   byte vals[2];
-} PC_STACK[MAX_PC];
+} /*PC_STACK[INIT_PC_STACK_CAPACITY], */ *P_PC_STACK;
 
 // instructions
 typedef void (*__instruction_ptr)();
@@ -57,10 +60,9 @@ struct _INSTRUCTION{
 } INSTRUCTIONS[MAX_INSTRUCTIONS];
 
 void setup() {
-  // put your setup code here, to run once:
   pinMode(PIN_STATE, OUTPUT);
-
   memclear(OPERA_STACK, MAX_OPERA_STACK);
+  P_PC_STACK = new _PC[INIT_PC_STACK_CAPACITY];
 
 // DO NOT CLEAR ROM because user code that stored in ROM will be executed after reboot
 //  clearEEPROM();
@@ -139,7 +141,7 @@ void executeUserCode() {
 
 //  debug("executing code: ", " pc: "+ String(pc)+" START", userCodeBuffer, eeAddress);
   debug(CONST_POOL[0], pc);
-  struct _PC _pc = PC_STACK[pc];
+  struct _PC _pc = *(P_PC_STACK+pc);
   struct _INSTRUCTION instruction = INSTRUCTIONS[_pc.instruction];
 
   for (int i=0; i<_pc.valLen; i++){
@@ -210,10 +212,7 @@ void preparePcStack(int userCodeBufferLen) {
         indexStepForward = INSTRUCTIONS[code].getcode_fun(index, &pc);
         debug("indexStepForward=" + String(indexStepForward));
         index += indexStepForward;
-        PC_STACK[pcCount]=pc;
-//        debug("PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
-        pcCount++;
-        totalPc++;
+        addPcToStack(pc, pcCount);
         break;
       default:
 //        error("instruction is undefined. 0x" + String(code, HEX));
@@ -224,6 +223,26 @@ void preparePcStack(int userCodeBufferLen) {
     index++;
     code = getNextCode(index);
   }
+}
+
+void addPcToStack(struct _PC pc, int& pcCount) {
+  if (pcCount > pcStackCapacity * PC_INCREMENTAL_RATIO) {
+    pcStackCapacity = pcStackCapacity * 2;
+
+    _PC *tempPcStack = new _PC[pcStackCapacity];
+    for (int i=0; i<totalPc; i++){
+      *(tempPcStack+i) = *(P_PC_STACK+i);
+    }
+    _PC * old_P_PC_STACK = P_PC_STACK;
+    P_PC_STACK = tempPcStack;
+    tempPcStack = NULL;
+    delete[] old_P_PC_STACK; //
+  }
+  
+  *(P_PC_STACK+pcCount)=pc;
+  //        debug("P_PC_STACK[" + String(pcCount) + "] vals[0]=0x" + String(pc.vals[0], HEX) + " vals[1]=0x" + String(pc.vals[1], HEX));
+  pcCount++;
+  totalPc++;
 }
 
 int getNopCode(const int index, struct _PC *const pc){
@@ -362,14 +381,15 @@ void checkAndReadUserCodeFromSerial() {
         //todo 结尾控制符号可能含在读取的内容中间而非恰好是在末尾，是否需要处理？
         //     一般正规jerry编译器可以确保结尾控制符处于末尾
         //todo 结尾控制符选择EF并非最好，需要另外选择其它符号
-        if (userCodeDownloadBuffer[userCodeDownloadBufferLen - 1] == CONTROL_END) {
-          for (int j=0; j<userCodeDownloadBufferLen - 1; j++) {
+        int controlEndIndex = checkIfContainsEndCtrlMagicNumber(userCodeDownloadBufferLen);
+        if (controlEndIndex >= 0) {
+          for (int j=0; j<= controlEndIndex; j++) {
             EEPROM.write(eeAddress, userCodeDownloadBuffer[j]);
             eeAddress++;
           }
           
           doSomethingWhenFinishReadingUserCode();// reset pc, reset readingUserCode flag
-//          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen - 1);
+          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen - 1);
         }
         else {
           for (int j=0; j<userCodeDownloadBufferLen; j++) {
@@ -377,7 +397,7 @@ void checkAndReadUserCodeFromSerial() {
             eeAddress++;
           }
 
-//          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen);
+          debug("eeAddress is " + String(eeAddress) + ", Write codes to ROM: ", " Over", userCodeDownloadBuffer, userCodeDownloadBufferLen);
           if (eeAddress >= EEPROM_SIZE -1) {
             doSomethingWhenFinishReadingUserCode();
             clearEEPROM();
@@ -396,6 +416,18 @@ void checkAndReadUserCodeFromSerial() {
   }
 }
 
+int checkIfContainsEndCtrlMagicNumber(size_t userCodeDownloadBufferLen){
+  for (int i=0; i<userCodeDownloadBufferLen; i++){
+    if (userCodeDownloadBuffer[i] == CONTROL_END){
+      debug("CONTROL_END: " + String(i));
+      return i;
+    }
+  }
+
+debug("NO CONTROL_END: ");
+  return -1;
+}
+
 void memclear(byte mem[], const int len) {
   for (int i; i<len; i++)
     mem[i]=0;
@@ -412,7 +444,7 @@ void doSomethingWhenStartReadingUserCode() {
 }
 
 void doSomethingWhenFinishReadingUserCode() {
-//  debug("doSomethingWhenFinishReadingUserCode");
+  debug("doSomethingWhenFinishReadingUserCode");
   debug(CONST_POOL[11]);
 
   resetPC();
